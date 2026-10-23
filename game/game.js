@@ -809,7 +809,8 @@
         }
         case 'tk': {
           const fi = Math.floor(p.actT / 0.075);
-          p.vx = 0;
+          if (p.onGround) p.vx = 0;
+          else p.vy = Math.min(p.vy, 90); // no ar: flutua de leve durante o golpe
           if (fi >= 3 && fi <= 4) {
             const box = { x: p.face > 0 ? p.x + 10 : p.x - 140, y: p.y - 80, w: 130, h: 72 };
             strike(box, 28, p.face, p.hitSet, '#ffb0a0');
@@ -904,7 +905,7 @@
       if (pressed.has('attack') && !p.swordOut) {
         if (p.hearts <= 0) { flashMessage('Sem corações'); audio.play('deny'); }
         else { p.hearts--; p.act = 'throw'; p.actT = 0; p.thrown = false; audio.play('swish'); }
-      } else if (pressed.has('tk') && p.onGround) {
+      } else if (pressed.has('tk')) {
         if (p.mp < 12) { flashMessage('MP insuficiente'); audio.play('deny'); }
         else { p.mp -= 12; p.act = 'tk'; p.actT = 0; p.hitSet = new Set(); p.tkShake = false; showToast('TELECINESE'); audio.play('tk'); }
       } else if (pressed.has('block') && p.onGround) {

@@ -200,7 +200,7 @@
     rows.forEach((r, y) => [...r].forEach((ch, x) => { if (pal[ch]) { g.fillStyle = pal[ch]; g.fillRect(x * scale, y * scale, scale, scale); } }));
     return c;
   }
-  const SKULL = pixelSprite([
+  const SKULL_ROWS = [
     '....bbbb....',
     '..bwwwwwwb..',
     '.bwwwwwwwwb.',
@@ -213,7 +213,9 @@
     '..bwwwwwwb..',
     '..bkwkwkwb..',
     '...bwwwwb...',
-  ], { b: '#3b3346', w: '#e9e1cf', k: '#1a1222', r: '#ff3b4e' }, 2);
+  ];
+  const SKULL = pixelSprite(SKULL_ROWS, { b: '#3b3346', w: '#e9e1cf', k: '#1a1222', r: '#ff3b4e' }, 2);
+  const SKULL_P = pixelSprite(SKULL_ROWS, { b: '#5a1020', w: '#f2c4c4', k: '#2a0610', r: '#ff2030' }, 2); // possuída
   const HEART = pixelSprite([
     '.rr.rr.',
     'rRrrrrr',
@@ -238,6 +240,46 @@
     'bBBBb',
     '.bbb.',
   ], { b: '#1d4f9a', B: '#48a8f0', w: '#e8f6ff' }, 1);
+
+  // esqueleto: tronco + duas poses de pernas (andar)
+  const SKEL_TOP = [
+    '.....wwww.....',
+    '....wwwwww....',
+    '....wkwwkw....',
+    '....wrwwrw....',
+    '....wwwwww....',
+    '.....wkkw.....',
+    '.....wwww.....',
+    '......ww......',
+    '...swwwwwws...',
+    '...w.wsws.w...',
+    '...w.wsws.w...',
+    '...w.wwww.w...',
+    '..ww.swws.ww..',
+    '......ww......',
+    '......ww......',
+    '....swwwws....',
+    '....w....w....',
+  ];
+  const SKEL_LEGS = [[
+    '....w....w....',
+    '....w....w....',
+    '....ww...ww...',
+    '....w.....w...',
+    '....w.....w...',
+    '...ww....ww...',
+    '..www...www...',
+  ], [
+    '.....w..w.....',
+    '.....w..w.....',
+    '.....ww.w.....',
+    '......w.w.....',
+    '......w.ww....',
+    '.....ww..w....',
+    '....www.www...',
+  ]];
+  const SKEL = SKEL_LEGS.map(l => pixelSprite(SKEL_TOP.concat(l), { w: '#e9e1cf', s: '#9a917f', k: '#1a1222', r: '#8a2030' }, 3));
+  const SKEL_P = SKEL_LEGS.map(l => pixelSprite(SKEL_TOP.concat(l), { w: '#f2c4c4', s: '#a0485a', k: '#2a0610', r: '#ff2030' }, 3));
 
   // ---------------------------------------------------------------- cenário pré-renderizado
   const sky = mkCanvas(900, H), wall = mkCanvas(ROOM_W, ROOM_H), front = mkCanvas(ROOM_W, ROOM_H);
@@ -470,6 +512,7 @@
     enemies = [
       dummy(640),
       skull(520, 150, 0), skull(700, 120, 2.1),
+      skeleton(330), skeleton(770),
     ];
     candles = [[120, 214], [470, 214], [570, 76], [716, 44], [896, 270], [1010, 214], [1240, 214]]
       .map(([x, y]) => ({ x, y, alive: true, t: 0 }));
@@ -515,12 +558,23 @@
     };
   }
 
+  /** Criatura possuída que os outros inimigos devem atacar (nunca a própria). */
+  function possessedFoe(self) {
+    const c = player && player.possess;
+    return c && c !== self && c.alive ? c : null;
+  }
+  function drawStun(g, x, y) {
+    g.fillStyle = '#ffe08a';
+    for (let i = 0; i < 3; i++) { const a = time * 6 + i * 2.09; g.fillRect(Math.round(x + Math.cos(a) * 9), Math.round(y + Math.sin(a) * 3), 2, 2); }
+  }
+
   function skull(hx, hy, phase) {
     return {
-      kind: 'skull', hx, hy, x: hx, y: hy, phase, hp: 30, maxHp: 30, alive: true, respawn: 0, flash: 0, kx: 0,
+      kind: 'skull', name: 'CAVEIRA', hx, hy, x: hx, y: hy, phase, hp: 30, maxHp: 30, alive: true, respawn: 0, flash: 0, kx: 0,
+      face: 1, stun: 0, possessed: false, cd: 0, dashT: 0, hitSet: null,
       box() { return { x: this.x - 11, y: this.y - 11, w: 22, h: 22 }; },
       hurt(dmg, dir) {
-        this.hp -= dmg; this.flash = 0.12; this.kx = dir * 60;
+        this.hp -= dmg; this.flash = 0.12; if (!this.possessed) this.kx = dir * 60;
         if (this.hp <= 0) {
           this.alive = false; this.respawn = 5;
           burst(this.x, this.y, 26, ['#e9e1cf', '#6fb6ff', '#ffffff'], 140);
@@ -530,28 +584,150 @@
       },
       update(dt) {
         if (!this.alive) {
-          if ((this.respawn -= dt) <= 0) { this.alive = true; this.hp = this.maxHp; this.x = this.hx; this.y = this.hy; burst(this.x, this.y, 12, ['#6fb6ff'], 60); }
+          if ((this.respawn -= dt) <= 0) { Object.assign(this, { alive: true, hp: this.maxHp, x: this.hx, y: this.hy, stun: 0, kx: 0 }); burst(this.x, this.y, 12, ['#6fb6ff'], 60); }
           return;
         }
-        this.phase += dt;
-        const near = Math.abs(player.x - this.hx) < 220 && player.form !== 'mist';
-        const tx = near ? lerp(this.hx, player.x, 0.35) : this.hx + Math.sin(this.phase * 0.7) * 50;
-        const ty = this.hy + Math.sin(this.phase * 2.2) * 18;
+        this.phase += dt; this.flash -= dt;
+        const flameColor = this.possessed ? ['#c0283c', '#ff6070'] : ['#3d8bff', '#9ed0ff'];
+        if (Math.random() < 0.5) particles.push({ x: this.x + (Math.random() - 0.5) * 10, y: this.y + 8, vx: 0, vy: -20 - Math.random() * 30, life: 0.5, max: 0.5, color: flameColor[Math.random() < 0.5 ? 0 : 1], size: 2, add: true });
+        if (this.possessed) { this.control(dt); return; }
+        if (this.stun > 0) { this.stun -= dt; this.kx *= Math.pow(0.02, dt); this.x += this.kx * dt; return; }
+        const foe = possessedFoe(this);
+        let tx, ty;
+        if (foe && Math.abs(foe.x - this.hx) < 300) { // ataca a criatura possuída
+          const b = foe.box();
+          tx = b.x + b.w / 2; ty = b.y + b.h / 2;
+        } else {
+          const near = Math.abs(player.x - this.hx) < 220 && player.form !== 'mist';
+          tx = near ? lerp(this.hx, player.x, 0.35) : this.hx + Math.sin(this.phase * 0.7) * 50;
+          ty = this.hy + Math.sin(this.phase * 2.2) * 18;
+        }
         this.x += (tx - this.x) * dt * 1.2 + this.kx * dt;
         this.y += (ty - this.y) * dt * 2;
         this.kx *= Math.pow(0.02, dt);
-        this.flash -= dt;
-        if (Math.random() < 0.5) particles.push({ x: this.x + (Math.random() - 0.5) * 10, y: this.y + 8, vx: 0, vy: -20 - Math.random() * 30, life: 0.5, max: 0.5, color: Math.random() < 0.5 ? '#3d8bff' : '#9ed0ff', size: 2, add: true });
+      },
+      /** Controlada pelo jogador: voa, X dispara chama, C investida em chamas. */
+      control(dt) {
+        this.cd -= dt;
+        const e = { x: this.x, y: this.y + 11, w: 22, h: 22, vx: 0, vy: 0, dropT: 1, form: 'bat' };
+        if (this.dashT > 0) {
+          this.dashT -= dt;
+          moveX(e, this.face * 340 * dt);
+        } else {
+          const ax = (down('right') ? 1 : 0) - (down('left') ? 1 : 0);
+          const ay = (down('down') ? 1 : 0) - ((down('up') || down('jump')) ? 1 : 0);
+          const n = Math.hypot(ax, ay) || 1;
+          moveX(e, ax / n * 150 * dt); moveY(e, ay / n * 150 * dt);
+          if (ax) this.face = ax;
+          if (pressed.has('attack') && this.cd <= 0) {
+            this.cd = 0.3; audio.play('fire');
+            projs.push({ kind: 'bfire', x: this.x + this.face * 12, y: this.y, vx: this.face * 300, t: 0, hitSet: new Set() });
+          } else if (pressed.has('tk') && this.cd <= 0) {
+            this.cd = 0.8; this.dashT = 0.35; this.hitSet = new Set(); showToast('INVESTIDA EM CHAMAS'); audio.play('swish');
+          }
+        }
+        this.x = e.x; this.y = e.y - 11;
+        if (this.dashT > 0) {
+          strike(this.box(), 16, this.face, this.hitSet, '#ff6070', { exclude: this, raw: true });
+          particles.push({ x: this.x - this.face * 10, y: this.y + (Math.random() - 0.5) * 12, vx: -this.face * 40, vy: 0, life: 0.3, max: 0.3, color: '#ff4060', size: 3, add: true });
+        }
       },
       draw(g) {
         if (!this.alive) return;
         const x = Math.round(this.x - camX - 12), y = Math.round(this.y - 12 + Math.sin(this.phase * 6) * 1);
-        glow(g, this.x - camX, this.y, 26, 'rgba(60,140,255,.25)');
+        glow(g, this.x - camX, this.y, 26, this.possessed ? 'rgba(230,30,60,.4)' : 'rgba(60,140,255,.25)');
+        const img = this.possessed ? SKULL_P : SKULL;
         if (this.flash > 0) { g.globalAlpha = 0.6; }
-        g.drawImage(SKULL, x, y);
-        if (this.flash > 0) { g.globalCompositeOperation = 'lighter'; g.drawImage(SKULL, x, y); g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; }
+        g.drawImage(img, x, y);
+        if (this.flash > 0) { g.globalCompositeOperation = 'lighter'; g.drawImage(img, x, y); g.globalCompositeOperation = 'source-over'; g.globalAlpha = 1; }
+        if (this.stun > 0) drawStun(g, this.x - camX, this.y - 16);
       },
     };
+  }
+
+  function skeleton(hx) {
+    return {
+      kind: 'skel', name: 'ESQUELETO', hx, x: hx, y: 320, w: 24, h: 66, vx: 0, vy: 0, face: -1, onGround: true, dropT: 0, form: 'skel',
+      hp: 40, maxHp: 40, alive: true, respawn: 0, flash: 0, stun: 0, possessed: false, cd: 1.2, walkT: 0, slashT: 0, hitSet: null,
+      box() { return { x: this.x - 12, y: this.y - 66, w: 24, h: 66 }; },
+      hurt(dmg, dir) {
+        this.hp -= dmg; this.flash = 0.12;
+        if (!this.possessed) this.vx = dir * 140;
+        if (this.hp <= 0) {
+          this.alive = false; this.respawn = 6;
+          burst(this.x, this.y - 34, 30, ['#e9e1cf', '#9a917f', '#ffffff'], 160, { grav: 500 });
+          if (Math.random() < 0.6) dropItem(this.x, this.y - 30);
+          audio.play('break');
+        }
+      },
+      physics(dt) {
+        this.vy = Math.min(MAX_FALL, this.vy + GRAV * dt);
+        moveX(this, this.vx * dt);
+        this.onGround = moveY(this, this.vy * dt) === 'floor';
+      },
+      update(dt) {
+        if (!this.alive) {
+          if ((this.respawn -= dt) <= 0) { Object.assign(this, { alive: true, hp: this.maxHp, x: this.hx, y: 320, vx: 0, vy: 0, stun: 0 }); burst(this.x, this.y - 24, 14, ['#9a917f'], 60); }
+          return;
+        }
+        this.flash -= dt; this.cd -= dt; this.slashT -= dt;
+        if (this.possessed) { this.control(dt); return; }
+        if (this.stun > 0) { this.stun -= dt; this.vx *= Math.pow(0.02, dt); this.physics(dt); return; }
+        const foe = possessedFoe(this);
+        const tgt = foe || (player.form !== 'mist' ? player : null);
+        let want;
+        if (tgt && Math.abs(tgt.x - this.x) < 240 && Math.abs(tgt.y - this.y) < 120) {
+          const dx = tgt.x - this.x;
+          this.face = Math.sign(dx) || this.face;
+          want = Math.abs(dx) > 130 ? this.face * 45 : Math.abs(dx) < 70 ? -this.face * 35 : 0;
+          if (this.cd <= 0) { this.cd = 1.6 + Math.random() * 0.6; throwBone(this, 'enemy', dx); }
+        } else { // patrulha perto de casa
+          if (Math.abs(this.x - this.hx) > 70) this.face = Math.sign(this.hx - this.x);
+          want = this.face * 30;
+        }
+        this.vx = lerp(this.vx, want, Math.min(1, dt * 6));
+        this.walkT += Math.abs(this.vx) * dt;
+        this.physics(dt);
+      },
+      /** Controlado pelo jogador: anda e pula, X arremessa osso, C golpe com espada de osso. */
+      control(dt) {
+        const ax = (down('right') ? 1 : 0) - (down('left') ? 1 : 0);
+        this.vx = ax * 115;
+        if (ax) this.face = ax;
+        if (pressed.has('jump') && this.onGround) { this.vy = -470; audio.play('jump'); }
+        if (pressed.has('attack') && this.cd <= 0) { this.cd = 0.35; throwBone(this, 'possessed', this.face * 160); }
+        else if (pressed.has('tk') && this.cd <= 0) { this.cd = 0.45; this.slashT = 0.22; this.hitSet = new Set(); audio.play('swish'); }
+        if (this.slashT > 0) strike({ x: this.face > 0 ? this.x + 4 : this.x - 48, y: this.y - 64, w: 44, h: 48 }, 14, this.face, this.hitSet, '#e9e1cf', { exclude: this, raw: true });
+        this.walkT += Math.abs(this.vx) * dt;
+        this.physics(dt);
+      },
+      draw(g) {
+        if (!this.alive) return;
+        const set = this.possessed ? SKEL_P : SKEL;
+        const img = set[Math.abs(this.vx) > 5 ? Math.floor(this.walkT / 14) % 2 : 0];
+        const x = Math.round(this.x - camX), y = Math.round(this.y);
+        if (this.possessed) glow(g, x, y - 36, 46, 'rgba(220,30,60,.38)');
+        g.save(); g.translate(x, y); if (this.face < 0) g.scale(-1, 1);
+        if (this.flash > 0) g.globalAlpha = 0.6;
+        g.drawImage(img, -21, -72);
+        if (this.slashT > 0) { // golpe em arco com a espada de osso
+          const k = 1 - this.slashT / 0.22;
+          g.strokeStyle = `rgba(240,230,210,${0.9 - k * 0.6})`; g.lineWidth = 3;
+          g.beginPath(); g.arc(8, -40, 34, -1.3 + k * 0.4, -1.3 + k * 2.2); g.stroke();
+          g.fillStyle = '#e9e1cf'; g.save(); g.translate(12, -40); g.rotate(-1.3 + k * 2.2); g.fillRect(0, -1, 28, 3); g.restore();
+        }
+        g.restore();
+        g.globalAlpha = 1;
+        if (this.stun > 0) drawStun(g, x, y - 78);
+      },
+    };
+  }
+
+  function throwBone(e, owner, dx) {
+    let vx = clamp(dx * 1.3, -260, 260);
+    if (Math.abs(vx) < 90) vx = (Math.sign(vx) || e.face) * 90;
+    projs.push({ kind: 'bone', owner, x: e.x + e.face * 10, y: e.y - 58, vx, vy: -330, t: 0, rot: 0, hitSet: new Set() });
+    audio.play('swish');
   }
 
   function dropItem(x, y) {
@@ -623,12 +799,12 @@
   // ---------------------------------------------------------------- ataques
   const mult = () => player.buff > 0 ? 2 : 1;
   /** Aplica dano a tudo que encostar na caixa. `hitSet` evita acertar o mesmo alvo duas vezes. */
-  function strike(box, base, dir, hitSet, color) {
+  function strike(box, base, dir, hitSet, color, opts = {}) {
     let any = false;
     for (const en of enemies) {
-      if (en.alive === false || hitSet.has(en) || !overlap(box, en.box())) continue;
+      if (en === opts.exclude || en.alive === false || hitSet.has(en) || !overlap(box, en.box())) continue;
       hitSet.add(en);
-      const dmg = Math.round(base * mult() * (0.85 + Math.random() * 0.3));
+      const dmg = Math.round(base * (opts.raw ? 1 : mult()) * (0.85 + Math.random() * 0.3));
       en.hurt(dmg, dir);
       const b = en.box();
       dmgText(b.x + b.w / 2, b.y - 4, dmg, player.buff > 0 ? '#ffb347' : '#ffffff');
@@ -699,6 +875,55 @@
 
   function flashMessage(s) { message = { s, t: 1.4 }; }
 
+  // ---------------------------------------------------------------- possessão (forma de névoa)
+  function tryPossess() {
+    const p = player, pb = boxOf(p);
+    const reach = { x: pb.x - 8, y: pb.y - 8, w: pb.w + 16, h: pb.h + 16 };
+    const c = enemies.find(en => en.alive && en.control && !en.possessed && overlap(reach, en.box()));
+    if (!c) { flashMessage('Encoste a névoa num inimigo'); audio.play('deny'); return; }
+    if (p.mp < 10) { flashMessage('MP insuficiente'); audio.play('deny'); return; }
+    p.mp -= 10; p.possess = c;
+    Object.assign(c, { possessed: true, stun: 0, vx: 0, kx: 0, cd: 0.25, hitSet: new Set() });
+    showToast(`POSSESSÃO: ${c.name}`); audio.play('morph');
+    const b = c.box();
+    burst(b.x + b.w / 2, b.y + b.h / 2, 30, ['#c0283c', '#ff4060', '#2a0610'], 140, { life: 0.5, grav: 0 });
+  }
+
+  function releasePossession(msg) {
+    const p = player, c = p.possess;
+    if (!c) return;
+    p.possess = null; c.possessed = false;
+    if (c.alive) { c.stun = 2.5; c.vx = 0; c.dashT = 0; c.slashT = 0; }
+    const b = c.box();
+    p.x = b.x + b.w / 2; p.y = Math.min(b.y + b.h, b.y + b.h / 2 + p.h / 2);
+    p.vx = p.vy = 0; p.inv = 0.8;
+    burst(p.x, p.y - p.h / 2, 24, ['#c0283c', '#ff4060'], 110, { life: 0.5, grav: 0 });
+    audio.play('unmorph');
+    if (msg) flashMessage(msg);
+  }
+
+  function damageCreature(c, dmg, dir) {
+    c.hurt(dmg, dir);
+    const b = c.box();
+    dmgText(b.x + b.w / 2, b.y - 4, dmg, '#ff6070');
+    audio.play('hurt'); shake = Math.max(shake, 2);
+  }
+
+  function updatePossession(dt) {
+    const p = player, c = p.possess;
+    if (!c.alive) { releasePossession('A criatura foi destruída'); return; }
+    if (pressed.has('mist') || pressed.has('bat') || pressed.has('wolf')) { releasePossession(); return; }
+    const b = c.box();
+    p.x = b.x + b.w / 2; p.y = b.y + b.h; p.vx = p.vy = 0;
+    if (Math.random() < 0.5) particles.push({ x: b.x + Math.random() * b.w, y: b.y + Math.random() * b.h, vx: (Math.random() - 0.5) * 16, vy: -25, life: 0.6, max: 0.6, color: Math.random() < 0.5 ? '#c0283c' : '#ff4060', size: 2, add: true });
+    // os outros inimigos atacam a criatura possuída
+    for (const en of enemies) {
+      if (en === c || en.alive === false || !en.control || en.stun > 0) continue;
+      en.biteCd = (en.biteCd || 0) - dt;
+      if (en.biteCd <= 0 && overlap(b, en.box())) { en.biteCd = 0.8; damageCreature(c, 8, Math.sign(b.x + b.w / 2 - en.x) || 1); }
+    }
+  }
+
   function updatePlayer(dt) {
     const p = player;
     p.animT += dt;
@@ -708,8 +933,12 @@
       p.buff -= dt;
       if (Math.random() < 0.6) particles.push({ x: p.x + (Math.random() - 0.5) * 24, y: p.y - Math.random() * p.h, vx: 0, vy: -40 - Math.random() * 40, life: 0.5, max: 0.5, color: Math.random() < 0.5 ? '#ff5a1f' : '#ffc04a', size: 2, add: true });
     }
-    p.mp = Math.min(p.maxMp, p.mp + (p.form === 'mist' ? -6 : 4) * dt);
-    if (p.form === 'mist' && p.mp <= 0) { p.mp = 0; startMorph('human'); }
+    p.mp = Math.min(p.maxMp, p.mp + (p.possess ? -9 : p.form === 'mist' ? -6 : 4) * dt);
+    if (p.form === 'mist' && p.mp <= 0) {
+      p.mp = 0;
+      if (p.possess) releasePossession('MP esgotado');
+      else if ((p.retryT = (p.retryT || 0) - dt) <= 0) { p.retryT = 0.6; startMorph('human'); }
+    }
 
     // ----- transformação em andamento
     if (p.morph) {
@@ -729,6 +958,8 @@
       return;
     }
 
+    if (p.possess) { updatePossession(dt); return; }
+
     // ----- comandos de forma
     for (const f of ['mist', 'bat', 'wolf']) if (pressed.has(f)) { startMorph(f); return; }
 
@@ -740,7 +971,7 @@
     if (p.inv <= 0 && p.form !== 'mist') {
       const pb = boxOf(p);
       for (const en of enemies) {
-        if (en.kind !== 'skull' || !en.alive || !overlap(pb, en.box())) continue;
+        if (!en.control || !en.alive || en.possessed || en.stun > 0 || !overlap(pb, en.box())) continue;
         const from = Math.sign(p.x - en.x) || 1;
         const blocking = p.act === 'block' && from === -p.face;
         if (blocking) {
@@ -986,6 +1217,7 @@
     p.vx = lerp(p.vx, ax / n * speed, Math.min(1, dt * 8));
     p.vy = lerp(p.vy, ay / n * speed, Math.min(1, dt * 8));
     if (ax) p.face = ax;
+    if (p.form === 'mist' && pressed.has('attack')) tryPossess();
     if (p.form === 'bat' && pressed.has('attack')) {
       if (p.mp >= 3) {
         p.mp -= 3; audio.play('fire');
@@ -1030,6 +1262,32 @@
         if (Math.random() < 0.9) particles.push({ x: s.x, y: s.y + (Math.random() - 0.5) * 4, vx: -s.vx * 0.1, vy: (Math.random() - 0.5) * 20, life: 0.25, max: 0.25, color: Math.random() < 0.5 ? '#ff7a2a' : '#ffd36a', size: 2, add: true });
         if (strike({ x: s.x - 5, y: s.y - 5, w: 10, h: 10 }, 8, Math.sign(s.vx), s.hitSet, '#ffb347') || solidFor({}, Math.floor(s.x / T), Math.floor(s.y / T)) || s.t > 1.5) {
           s.dead = true; burst(s.x, s.y, 8, ['#ff7a2a', '#ffd36a'], 80, { life: 0.25 });
+        }
+      } else if (s.kind === 'bfire') { // chama da caveira possuída
+        s.x += s.vx * dt;
+        if (Math.random() < 0.9) particles.push({ x: s.x, y: s.y + (Math.random() - 0.5) * 4, vx: -s.vx * 0.1, vy: (Math.random() - 0.5) * 20, life: 0.25, max: 0.25, color: Math.random() < 0.5 ? '#ff4060' : '#ffb0c0', size: 2, add: true });
+        if (strike({ x: s.x - 5, y: s.y - 5, w: 10, h: 10 }, 10, Math.sign(s.vx), s.hitSet, '#ff6070', { exclude: player.possess, raw: true }) || solidFor({}, Math.floor(s.x / T), Math.floor(s.y / T)) || s.t > 1.5) {
+          s.dead = true; burst(s.x, s.y, 8, ['#ff4060', '#ffb0c0'], 80, { life: 0.25 });
+        }
+      } else if (s.kind === 'bone') {
+        s.vy += 700 * dt; s.x += s.vx * dt; s.y += s.vy * dt; s.rot += dt * 14 * Math.sign(s.vx);
+        const box = { x: s.x - 5, y: s.y - 5, w: 10, h: 10 };
+        if (s.owner === 'possessed') {
+          if (strike(box, 12, Math.sign(s.vx), s.hitSet, '#e9e1cf', { exclude: player.possess, raw: true })) s.dead = true;
+        } else {
+          const c = player.possess;
+          if (c && c.alive && overlap(box, c.box())) { damageCreature(c, 10, Math.sign(s.vx)); s.dead = true; }
+          else if (!c && player.form !== 'mist' && !player.morph && player.inv <= 0 && overlap(box, boxOf(player))) {
+            const from = Math.sign(player.x - s.x) || 1;
+            if ((player.act === 'block' && from === -player.face) || player.act === 'cape') {
+              player.blockFlash = 0.18; audio.play('block');
+              burst(s.x, s.y, 10, ['#ffe08a', '#ffffff'], 120, { life: 0.3 });
+            } else hurtPlayer(10, from);
+            s.dead = true;
+          }
+        }
+        if (!s.dead && (solidFor({}, Math.floor(s.x / T), Math.floor(s.y / T)) || s.t > 3)) {
+          s.dead = true; burst(s.x, s.y, 6, ['#e9e1cf', '#9a917f'], 60, { life: 0.3 });
         }
       } else if (s.kind === 'ring') {
         s.r += 260 * dt;
@@ -1084,6 +1342,7 @@
   // ---------------------------------------------------------------- pose atual do jogador (para desenho)
   function currentPose() {
     const p = player;
+    if (p.possess) return null; // a névoa está dentro da criatura
     const pose = (anim, i, o = {}) => ({ f: fr(anim, i), x: p.x, y: p.y, face: p.face, ...o });
     if (p.morph) {
       const m = p.morph, n = ATLAS[m.anim].length;
@@ -1184,7 +1443,7 @@
     const pose = currentPose();
     const p = player;
     if (p.buff > 0) glow(g, p.x - cx, p.y - 36, 60, 'rgba(255,90,30,.28)');
-    if (p.form === 'mist') glow(g, p.x - cx, p.y - 15, 40, 'rgba(200,30,60,.25)');
+    if (p.form === 'mist' && !p.possess) glow(g, p.x - cx, p.y - 15, 40, 'rgba(200,30,60,.25)');
     if (pose) {
       const blink = p.inv > 0 && p.form !== 'mist' && Math.floor(p.inv * 20) % 2 === 0;
       drawFrame(g, pose.f, pose.x - cx, pose.y, pose.face, { ...pose, alpha: blink ? 0.35 : pose.alpha });
@@ -1200,6 +1459,15 @@
         glow(g, s.x - cx, s.y, 16, 'rgba(255,140,40,.5)');
         g.fillStyle = '#ffe9a0'; g.fillRect(Math.round(s.x - cx) - 3, Math.round(s.y) - 3, 6, 6);
         g.fillStyle = '#ff7a2a'; g.fillRect(Math.round(s.x - cx) - 2 - Math.sign(s.vx) * 4, Math.round(s.y) - 2, 4, 4);
+      } else if (s.kind === 'bfire') {
+        glow(g, s.x - cx, s.y, 16, 'rgba(255,40,70,.5)');
+        g.fillStyle = '#ffd0d8'; g.fillRect(Math.round(s.x - cx) - 3, Math.round(s.y) - 3, 6, 6);
+        g.fillStyle = '#ff2d4a'; g.fillRect(Math.round(s.x - cx) - 2 - Math.sign(s.vx) * 4, Math.round(s.y) - 2, 4, 4);
+      } else if (s.kind === 'bone') {
+        g.save(); g.translate(Math.round(s.x - cx), Math.round(s.y)); g.rotate(s.rot);
+        g.fillStyle = s.owner === 'possessed' ? '#f2c4c4' : '#e9e1cf';
+        g.fillRect(-5, -1, 10, 2); g.fillRect(-7, -2, 3, 4); g.fillRect(4, -2, 3, 4);
+        g.restore();
       } else if (s.kind === 'ring') {
         g.save(); g.globalCompositeOperation = 'lighter';
         g.strokeStyle = `rgba(255,80,100,${1 - s.t / 0.55})`; g.lineWidth = 3;
@@ -1268,10 +1536,17 @@
     bar(g, x + 28, y + 22, 114, 5, p.mp / p.maxMp, '#4fb4ff', '#123a66');
     g.drawImage(HEART, x + 10, y + 32);
     textOut(g, String(p.hearts), x + 30, y + 35, '#ffffff', 8);
-    const formName = { human: 'HUMANO', wolf: 'LOBO', bat: 'MORCEGO', mist: 'NÉVOA' }[p.form];
+    const formName = p.possess ? 'POSSESSÃO' : { human: 'HUMANO', wolf: 'LOBO', bat: 'MORCEGO', mist: 'NÉVOA' }[p.form];
     textOut(g, formName, x + 142, y + 35, p.buff > 0 ? '#ffb347' : '#b8b0d8', 8, 'right');
-    if (p.buff > 0) textOut(g, `AURA ${Math.ceil(p.buff)}s`, x + 6, y + 54, '#ffb347', 8, 'left');
-    if (relicTaken) textOut(g, '◆ RELÍQUIA DO ECO', x + 6, y + (p.buff > 0 ? 66 : 54), '#9ed0ff', 8, 'left');
+    let ly = y + 54;
+    if (p.possess) {
+      const c = p.possess;
+      textOut(g, `POSSUINDO: ${c.name}`, x + 6, ly, '#ff6070', 8, 'left');
+      bar(g, x + 6, ly + 7, 90, 3, c.hp / c.maxHp, '#ff6070', '#4a0a14');
+      ly += 18;
+    }
+    if (p.buff > 0) { textOut(g, `AURA ${Math.ceil(p.buff)}s`, x + 6, ly, '#ffb347', 8, 'left'); ly += 12; }
+    if (relicTaken) textOut(g, '◆ RELÍQUIA DO ECO', x + 6, ly, '#9ed0ff', 8, 'left');
 
     // minimapa
     const mx = W - 58, my = 10;
@@ -1368,7 +1643,7 @@
   }
 
   // leitura do estado para testes automatizados (somente leitura)
-  window.__salao = { get player() { return player; }, get relic() { return relicTaken; } };
+  window.__salao = { get player() { return player; }, get enemies() { return enemies; }, get relic() { return relicTaken; } };
 
   // recarga a quente no visualizador: guarda a posição e os recursos
   window.claude?.hot?.snapshot?.(() => !player ? {} : ({ player: { x: player.x, y: player.y, face: player.face, hp: player.hp, mp: player.mp, hearts: player.hearts, relic: relicTaken } }));
